@@ -69,8 +69,39 @@ jobs:
         CC: gcc
     - name : Build Open5GS
       run: ninja -C build
-    - name: Test Open5GS
-      run: sudo meson test -C build -v -t 3
+    - name: Test Open5GS with handover diagnostics
+      shell: bash
+      run: |
+          mkdir -p build/macos-handover-diagnostics
+          git rev-parse HEAD > build/macos-handover-diagnostics/commit.txt
+          set +e
+          sudo "$(command -v python3)" \
+              .github/scripts/macos-handover-diagnostics.py \
+              build "$(command -v meson)" \
+              2>&1 | tee build/macos-handover-diagnostics/console.log
+          status=("${PIPESTATUS[@]}")
+          if [ "${status[0]}" -ne 0 ]; then
+              exit "${status[0]}"
+          fi
+          exit "${status[1]}"
+    - name: Make diagnostic files readable
+      if: always()
+      run: |
+          for path in build/meson-logs build/macos-handover-diagnostics; do
+              if [ -d "$path" ]; then
+                  sudo chown -R "$(id -u):$(id -g)" "$path"
+              fi
+          done
+    - name: Upload macOS test diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-handover-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          build/meson-logs/
+          build/macos-handover-diagnostics/
+        if-no-files-found: warn
+        retention-days: 7
 
   ubuntu-latest:
     name: Build and Test on Ubuntu Latest

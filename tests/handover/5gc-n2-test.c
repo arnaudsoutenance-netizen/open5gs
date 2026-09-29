@@ -19,6 +19,106 @@
 
 #include "test-common.h"
 
+#include <errno.h>
+
+/* Temporary, opt-in diagnostics for the macOS N2 handover hang. */
+static bool n2_diagnostics_enabled(void)
+{
+    const char *value = getenv("OGS_HO_DIAGNOSTICS");
+    return value && !strcmp(value, "1");
+}
+
+static void n2_run_test(abts_suite *suite, test_func func, void *data,
+        const char *name)
+{
+    bool enabled = n2_diagnostics_enabled();
+
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] N2 case %s BEGIN\n", name);
+    abts_run_test(suite, func, data);
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] N2 case %s END\n", name);
+}
+
+static ogs_pkbuf_t *n2_read(ogs_socknode_t *node, bool gtpu,
+        const char *function, int line, const char *name)
+{
+    ogs_pkbuf_t *pkbuf;
+    bool enabled = n2_diagnostics_enabled();
+    const char *protocol = gtpu ? "GTP-U" : "NGAP";
+    int saved_errno;
+
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] %s:%d %s %s node=%p WAIT\n",
+                function, line, protocol, name, (void *)node);
+
+    /* Preserve the original blocking receive and packet ownership. */
+    pkbuf = gtpu ? test_gtpu_read(node) : testsctp_read(node, 0);
+    saved_errno = errno;
+
+    if (enabled) {
+        fprintf(stderr, "[HO-DIAG] %s:%d %s %s DONE len=%d\n",
+                function, line, protocol, name, pkbuf ? (int)pkbuf->len : -1);
+        if (gtpu && pkbuf && pkbuf->len >= 8) {
+            const uint8_t *data = pkbuf->data;
+            uint32_t teid;
+
+            memcpy(&teid, data + 4, sizeof(teid));
+            fprintf(stderr, "[HO-DIAG] GTP-U type=%u TEID=0x%08x\n",
+                    (unsigned int)data[1], (unsigned int)ntohl(teid));
+        }
+    }
+    errno = saved_errno;
+    return pkbuf;
+}
+
+static int n2_ngap_send(ogs_socknode_t *node, ogs_pkbuf_t *pkbuf,
+        const char *function, int line, const char *name)
+{
+    bool enabled = n2_diagnostics_enabled();
+    int rv, saved_errno;
+
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] %s:%d NGAP %s SEND len=%d\n",
+                function, line, name, pkbuf ? (int)pkbuf->len : -1);
+    rv = testsctp_send(node, pkbuf, OGS_SCTP_NGAP_PPID, 0, 0);
+    saved_errno = errno;
+    /* testsctp_send() may have consumed pkbuf; do not inspect it here. */
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] %s:%d NGAP %s SENT rv=%d\n",
+                function, line, name, rv);
+    errno = saved_errno;
+    return rv;
+}
+
+static void n2_ngap_recv(test_ue_t *ue, ogs_pkbuf_t *pkbuf,
+        const char *function, int line)
+{
+    bool enabled = n2_diagnostics_enabled();
+
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] %s:%d NGAP DECODE BEGIN\n", function, line);
+    testngap_recv(ue, pkbuf);
+    if (enabled)
+        fprintf(stderr, "[HO-DIAG] %s:%d NGAP DECODE END procedure=%ld\n",
+                function, line, ue ? (long)ue->ngap_procedure_code : -1L);
+}
+
+/* Scope the wrappers to this translation unit, not the shared test helpers. */
+#define abts_run_test(suite, func, data) \
+    n2_run_test((suite), (func), (data), #func)
+#undef testgnb_ngap_read
+#define testgnb_ngap_read(node) \
+    n2_read((node), false, __func__, __LINE__, #node)
+#undef testgnb_gtpu_read
+#define testgnb_gtpu_read(node) \
+    n2_read((node), true, __func__, __LINE__, #node)
+#undef testgnb_ngap_send
+#define testgnb_ngap_send(node, pkbuf) \
+    n2_ngap_send((node), (pkbuf), __func__, __LINE__, #node)
+#define testngap_recv(ue, pkbuf) \
+    n2_ngap_recv((ue), (pkbuf), __func__, __LINE__)
+
 static void failure_func(abts_case *tc, void *data)
 {
     int rv;
