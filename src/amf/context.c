@@ -1350,7 +1350,9 @@ void amf_gnb_remove(amf_gnb_t *gnb)
 
     ogs_hash_set(self.gnb_addr_hash,
             gnb->sctp.addr, sizeof(ogs_sockaddr_t), NULL);
-    if (gnb->gnb_id_presence == true)
+    /* A late teardown must not unindex a newer association with this ID. */
+    if (gnb->gnb_id_presence == true &&
+            amf_gnb_find_by_gnb_id(gnb->gnb_id) == gnb)
         ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), NULL);
 
     ogs_sctp_flush_and_destroy(&gnb->sctp);
@@ -1392,8 +1394,17 @@ int amf_gnb_set_gnb_id(amf_gnb_t *gnb, uint32_t gnb_id, uint8_t gnb_id_length)
         return OGS_ERROR;
     }
 
-    if (gnb->gnb_id_presence == true)
+    if (gnb->gnb_id_presence == true &&
+            amf_gnb_find_by_gnb_id(gnb->gnb_id) == gnb)
         ogs_hash_set(self.gnb_id_hash, &gnb->gnb_id, sizeof(gnb->gnb_id), NULL);
+
+    /*
+     * A new association may reuse an ID before the old one is removed.
+     * ogs_hash_set() only replaces the value of an existing entry, keeping
+     * its original key pointer. Remove the entry first so the key belongs
+     * to this gNB, not to a context that may be freed or change its ID.
+     */
+    ogs_hash_set(self.gnb_id_hash, &gnb_id, sizeof(gnb_id), NULL);
 
     gnb->gnb_id = gnb_id;
     gnb->gnb_id_length = gnb_id_length;
